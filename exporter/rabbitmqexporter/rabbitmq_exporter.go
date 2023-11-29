@@ -73,7 +73,8 @@ func (e *rabbitMqLogsProducer) pushData(ctx context.Context, data plog.Logs, wra
 		deliveryMode = amqp.Persistent
 	}
 
-	confirmation, err := wrapper.channel.PublishWithDeferredConfirmWithContext(ctx, "", e.config.routingKey, false, false, amqp.Publishing{
+	// TODO handle case where message doesn't get routed to any queues and is returned (when configured with mandatory = true)
+	confirmation, err := wrapper.channel.PublishWithDeferredConfirmWithContext(ctx, "amq.direct", e.config.routingKey, false, false, amqp.Publishing{
 		Headers:         amqp.Table{},
 		ContentType:     publishingData.ContentType,
 		ContentEncoding: publishingData.ContentEncoding,

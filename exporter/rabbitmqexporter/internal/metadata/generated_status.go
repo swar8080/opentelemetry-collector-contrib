@@ -8,7 +8,5 @@ import (
 
 const (
 	Type             = "rabbitmq"
-	TracesStability  = component.StabilityLevelDevelopment
-	MetricsStability = component.StabilityLevelDevelopment
 	LogsStability    = component.StabilityLevelDevelopment
 )

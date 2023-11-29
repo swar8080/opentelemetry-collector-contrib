@@ -84,7 +84,7 @@ func (c *mockDeferredConfirmation) DeliveryTag() uint64 {
 	return c.deliveryTag
 }
 
-func (c *mockDeferredConfirmation) Done() chan struct{} {
+func (c *mockDeferredConfirmation) Done() <-chan struct{} {
 	return c.done
 }
 

@@ -27,7 +27,7 @@ type WrappedChannel interface {
 
 type WrappedDeferredConfirmation interface {
 	DeliveryTag() uint64
-	Done() chan struct{}
+	Done() <-chan struct{}
 	Acked() bool
 }
 
@@ -105,10 +105,10 @@ func (c *wrappedDeferredConfirmation) DeliveryTag() uint64 {
 	return c.confirmation.DeliveryTag
 }
 
-func (c *wrappedDeferredConfirmation) Done() chan struct{} {
-	return c.Done()
+func (c *wrappedDeferredConfirmation) Done() <-chan struct{} {
+	return c.confirmation.Done()
 }
 
 func (c *wrappedDeferredConfirmation) Acked() bool {
-	return c.Acked()
+	return c.confirmation.Acked()
 }

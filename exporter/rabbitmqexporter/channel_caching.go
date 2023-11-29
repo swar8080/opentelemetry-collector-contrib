@@ -59,6 +59,7 @@ func newAmqpChannelCacher(config *connectionConfig, amqpClient AmqpClient) (*amq
 }
 
 func (acc *amqpChannelCacher) connect() error {
+	acc.logger.Debug("Connecting to rabbitmq")
 
 	// Compare, Lock, Recompare Strategy
 	if acc.connection != nil && !acc.connection.IsClosed() /* <- atomic */ {
@@ -93,14 +94,14 @@ func (acc *amqpChannelCacher) connect() error {
 
 	acc.connection = amqpConn
 
-	// Goal is to lazily restore the mockConnection so this needs to be buffered to avoid blocking on asynchronous amqp errors.
+	// Goal is to lazily restore the connection so this needs to be buffered to avoid blocking on asynchronous amqp errors.
 	// Also re-create this channel each time because apparently the amqp library can close it
 	acc.connectionErrors = make(chan *amqp.Error, 1)
 	acc.connection.NotifyClose(acc.connectionErrors)
 
 	// TODO flow control callback
 	//acc.Blockers = make(chan amqp.Blocking, 10)
-	//acc.mockConnection.NotifyBlocked(acc.Blockers)
+	//acc.connection.NotifyBlocked(acc.Blockers)
 
 	return nil
 }
@@ -110,7 +111,7 @@ func (acc *amqpChannelCacher) restoreConnectionIfUnhealthy() {
 	select {
 	case err := <-acc.connectionErrors:
 		healthy = false
-		acc.logger.Debug("Received mockConnection error, will retry restoring unhealthy mockConnection", zap.Error(err))
+		acc.logger.Debug("Received connection error, will retry restoring unhealthy connection", zap.Error(err))
 	default:
 		break
 	}
@@ -118,22 +119,23 @@ func (acc *amqpChannelCacher) restoreConnectionIfUnhealthy() {
 	if !healthy || acc.connection.IsClosed() {
 		// TODO, consider retrying multiple times with some timeout
 		if err := acc.connect(); err != nil {
-			acc.logger.Warn("Failed attempt at restoring unhealthy mockConnection", zap.Error(err))
+			acc.logger.Warn("Failed attempt at restoring unhealthy connection", zap.Error(err))
 		} else {
-			acc.logger.Info("Restored unhealthy mockConnection")
+			acc.logger.Info("Restored unhealthy connection")
 		}
 	}
 }
 
 func (acc *amqpChannelCacher) createChannelWrapper(id int) *amqpChannelManager {
 	channelWrapper := &amqpChannelManager{id: id, logger: acc.logger, lock: &sync.Mutex{}}
-	channelWrapper.tryReplacingChannel(acc.connection, acc.config.confirmationMode)
+	err := channelWrapper.tryReplacingChannel(acc.connection, acc.config.confirmationMode)
+	if err != nil {
+		acc.logger.Warn("Error creating channel wrapper's channel", zap.Error(err))
+	}
 	return channelWrapper
 }
 
 func (acw *amqpChannelManager) tryReplacingChannel(connection WrappedConnection, confirmAcks bool) error {
-	// TODO consider confirmation mode
-
 	acw.lock.Lock()
 	defer acw.lock.Unlock()
 
@@ -194,7 +196,7 @@ func (acc *amqpChannelCacher) reconnectChannel(channel *amqpChannelManager) erro
 func (acc *amqpChannelCacher) close() error {
 	err := acc.connection.Close()
 	if err != nil {
-		acc.logger.Debug("Received error from mockConnection.Close()", zap.Error(err))
+		acc.logger.Warn("Error closing connection", zap.Error(err))
 		if err != amqp.ErrClosed {
 			return err
 		}
