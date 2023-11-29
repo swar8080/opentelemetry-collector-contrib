@@ -30,6 +30,7 @@ type publishFunc func() (WrappedDeferredConfirmation, error)
 type mockChannel struct {
 	published   []amqp.Publishing
 	publishImpl publishFunc
+	isClosed    bool
 	confirmMode bool
 }
 
@@ -76,7 +77,12 @@ func (c *mockChannel) PublishWithDeferredConfirmWithContext(ctx context.Context,
 	return c.publishImpl()
 }
 
+func (c *mockChannel) IsClosed() bool {
+	return c.isClosed
+}
+
 func (c *mockChannel) Close() error {
+	c.isClosed = true
 	return nil
 }
 
@@ -310,7 +316,7 @@ func buildMocks() (*mockClient, *mockConnection, *mockChannel, *mockDeferredConf
 		done:        make(chan struct{}),
 		acked:       false,
 	}
-	mockChannel := mockChannel{publishImpl: func() (WrappedDeferredConfirmation, error) {
+	mockChannel := mockChannel{isClosed: false, publishImpl: func() (WrappedDeferredConfirmation, error) {
 		return &confirmation, nil
 	}}
 	mockConnection := mockConnection{isClosed: false, channelImpl: func() (WrappedChannel, error) {

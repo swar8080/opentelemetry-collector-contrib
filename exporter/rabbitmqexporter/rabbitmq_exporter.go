@@ -48,6 +48,7 @@ func newExporterChannelCacher(conf config, set exporter.CreateSettings, connecti
 	return newAmqpChannelCacher(connectionConfig, client)
 }
 
+// TODO implement and add code re-use for other types of telemetry
 func (e *rabbitMqLogsProducer) logsDataPusher(ctx context.Context, data plog.Logs) error {
 	e.channelCacher.restoreConnectionIfUnhealthy()
 	channelWrapper, err := e.channelCacher.requestHealthyChannelFromPool()

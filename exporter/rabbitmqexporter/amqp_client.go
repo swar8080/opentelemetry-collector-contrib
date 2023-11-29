@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// AmqpClient Wrapper around the AMQP client library calls to allow mocking in tests
 type AmqpClient interface {
 	DialConfig(url string, config amqp.Config) (WrappedConnection, error)
 	DefaultDial(connectionTimeout time.Duration) func(network, addr string) (net.Conn, error)
@@ -22,6 +23,7 @@ type WrappedConnection interface {
 type WrappedChannel interface {
 	Confirm(noWait bool) error
 	PublishWithDeferredConfirmWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) (WrappedDeferredConfirmation, error)
+	IsClosed() bool
 	Close() error
 }
 
@@ -95,6 +97,10 @@ func (c *wrappedChannel) PublishWithDeferredConfirmWithContext(ctx context.Conte
 	}
 
 	return &wrappedDeferredConfirmation{confirmation: confirmation}, nil
+}
+
+func (c *wrappedChannel) IsClosed() bool {
+	return c.channel.IsClosed()
 }
 
 func (c *wrappedChannel) Close() error {

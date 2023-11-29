@@ -8,6 +8,7 @@ import (
 )
 
 type config struct {
+	//TODO add json struct tags
 	connectionUrl               string
 	channelPoolSize             int
 	connectionTimeout           time.Duration

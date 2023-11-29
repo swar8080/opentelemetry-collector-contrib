@@ -7,17 +7,14 @@ import (
 	"time"
 )
 
-type connectionConfig struct {
-	logger            *zap.Logger
-	connectionUrl     string
-	connectionName    string
-	channelPoolSize   int
-	heartbeatInterval time.Duration
-	connectionTimeout time.Duration
-	confirmationMode  bool
-	//durable           bool // TODO figure out what to do with this
-}
+// The channel cacher is used to gain exclusive access to an AMQP 0.9.1 channel for publishing queue messages, since they are not thread safe.
+// AMQP channels are like logical connections that share a single physical connection to reduce rabbitmq resource usage.
+//
+// This struct wraps a single connection and a fixed number of AMQP channels.
+// Re-using channels between batches avoids a few network calls for closing/recreating the channel (which took ~50ms in local testing with the nearest AWS region).
+// It also handles lazily recreating unhealthy connections/channels when a new batch comes in.
 
+// Much of this implementation is adapted from https://github.com/houseofcat/turbocookedrabbit's connection pool.
 type amqpChannelCacher struct {
 	logger             *zap.Logger
 	config             *connectionConfig
@@ -26,6 +23,16 @@ type amqpChannelCacher struct {
 	connLock           *sync.Mutex
 	channelManagerPool chan *amqpChannelManager
 	connectionErrors   chan *amqp.Error
+}
+
+type connectionConfig struct {
+	logger            *zap.Logger
+	connectionUrl     string
+	connectionName    string
+	channelPoolSize   int
+	heartbeatInterval time.Duration
+	connectionTimeout time.Duration
+	confirmationMode  bool
 }
 
 type amqpChannelManager struct {
@@ -50,9 +57,9 @@ func newAmqpChannelCacher(config *connectionConfig, amqpClient AmqpClient) (*amq
 		return nil, err
 	}
 
-	// Synchronously create and connect to channels
+	// Synchronously try creating and connecting to channels
 	for i := 0; i < acc.config.channelPoolSize; i++ {
-		acc.channelManagerPool <- acc.createChannelWrapper(i)
+		acc.channelManagerPool <- acc.createChannelManager(i)
 	}
 
 	return acc, nil
@@ -61,32 +68,31 @@ func newAmqpChannelCacher(config *connectionConfig, amqpClient AmqpClient) (*amq
 func (acc *amqpChannelCacher) connect() error {
 	acc.logger.Debug("Connecting to rabbitmq")
 
-	// Compare, Lock, Recompare Strategy
-	if acc.connection != nil && !acc.connection.IsClosed() /* <- atomic */ {
+	if acc.connection != nil && !acc.connection.IsClosed() {
 		acc.logger.Debug("Already connected before acquiring lock")
 		return nil
 	}
 
-	acc.connLock.Lock() // Block all but one.
+	acc.connLock.Lock()
 	defer acc.connLock.Unlock()
 
 	// Recompare, check if an operation is still necessary after acquiring lock.
-	if acc.connection != nil && !acc.connection.IsClosed() /* <- atomic */ {
+	if acc.connection != nil && !acc.connection.IsClosed() {
 		acc.logger.Debug("Already connected after acquiring lock")
 		return nil
 	}
 
-	// Proceed with reconnectivity
+	// Proceed with re-connecting
 	var amqpConn WrappedConnection
 	var err error
 
-	// TODO TLS config
 	amqpConn, err = acc.amqpClient.DialConfig(acc.config.connectionUrl, amqp.Config{
 		Heartbeat: acc.config.heartbeatInterval,
 		Dial:      acc.amqpClient.DefaultDial(acc.config.connectionTimeout),
 		Properties: amqp.Table{
 			"connection_name": acc.config.connectionName,
 		},
+		// TODO TLS config
 	})
 	if err != nil {
 		return err
@@ -99,7 +105,7 @@ func (acc *amqpChannelCacher) connect() error {
 	acc.connectionErrors = make(chan *amqp.Error, 1)
 	acc.connection.NotifyClose(acc.connectionErrors)
 
-	// TODO flow control callback
+	// TODO handle upstream flow control throttling publishing
 	//acc.Blockers = make(chan amqp.Blocking, 10)
 	//acc.connection.NotifyBlocked(acc.Blockers)
 
@@ -117,7 +123,13 @@ func (acc *amqpChannelCacher) restoreConnectionIfUnhealthy() {
 	}
 
 	if !healthy || acc.connection.IsClosed() {
-		// TODO, consider retrying multiple times with some timeout
+		if !acc.connection.IsClosed() {
+			err := acc.close()
+			if err != nil {
+				acc.logger.Warn("Error closing unhealthy connection", zap.Error(err))
+			}
+		}
+
 		if err := acc.connect(); err != nil {
 			acc.logger.Warn("Failed attempt at restoring unhealthy connection", zap.Error(err))
 		} else {
@@ -126,48 +138,13 @@ func (acc *amqpChannelCacher) restoreConnectionIfUnhealthy() {
 	}
 }
 
-func (acc *amqpChannelCacher) createChannelWrapper(id int) *amqpChannelManager {
+func (acc *amqpChannelCacher) createChannelManager(id int) *amqpChannelManager {
 	channelWrapper := &amqpChannelManager{id: id, logger: acc.logger, lock: &sync.Mutex{}}
 	err := channelWrapper.tryReplacingChannel(acc.connection, acc.config.confirmationMode)
 	if err != nil {
-		acc.logger.Warn("Error creating channel wrapper's channel", zap.Error(err))
+		acc.logger.Warn("Error creating channel manager's channel", zap.Error(err))
 	}
 	return channelWrapper
-}
-
-func (acw *amqpChannelManager) tryReplacingChannel(connection WrappedConnection, confirmAcks bool) error {
-	acw.lock.Lock()
-	defer acw.lock.Unlock()
-
-	if acw.channel != nil {
-		err := acw.channel.Close()
-		if err != nil {
-			acw.logger.Debug("Error closing existing channel", zap.Error(err))
-			acw.wasHealthy = false
-			return err
-		}
-	}
-
-	var err error
-	acw.channel, err = connection.Channel()
-
-	if err != nil {
-		acw.logger.Warn("Channel creation error", zap.Error(err))
-		acw.wasHealthy = false
-		return err
-	}
-
-	if confirmAcks {
-		err := acw.channel.Confirm(false)
-		if err != nil {
-			acw.logger.Debug("Error entering confirm mode", zap.Error(err))
-			acw.wasHealthy = false
-			return err
-		}
-	}
-
-	acw.wasHealthy = true
-	return nil
 }
 
 func (acc *amqpChannelCacher) requestHealthyChannelFromPool() (*amqpChannelManager, error) {
@@ -191,6 +168,40 @@ func (acc *amqpChannelCacher) returnChannelToPool(channelWrapper *amqpChannelMan
 func (acc *amqpChannelCacher) reconnectChannel(channel *amqpChannelManager) error {
 	acc.restoreConnectionIfUnhealthy()
 	return channel.tryReplacingChannel(acc.connection, acc.config.confirmationMode)
+}
+
+func (acw *amqpChannelManager) tryReplacingChannel(connection WrappedConnection, confirmAcks bool) error {
+	acw.lock.Lock()
+	defer acw.lock.Unlock()
+
+	if acw.channel != nil && !acw.channel.IsClosed() {
+		err := acw.channel.Close()
+		if err != nil {
+			acw.logger.Debug("Error closing existing channel", zap.Error(err))
+			acw.wasHealthy = false
+			return err
+		}
+	}
+
+	var err error
+	acw.channel, err = connection.Channel()
+	if err != nil {
+		acw.logger.Warn("Channel creation error", zap.Error(err))
+		acw.wasHealthy = false
+		return err
+	}
+
+	if confirmAcks {
+		err := acw.channel.Confirm(false)
+		if err != nil {
+			acw.logger.Debug("Error entering confirm mode", zap.Error(err))
+			acw.wasHealthy = false
+			return err
+		}
+	}
+
+	acw.wasHealthy = true
+	return nil
 }
 
 func (acc *amqpChannelCacher) close() error {

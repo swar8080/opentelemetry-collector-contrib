@@ -13,9 +13,6 @@ import (
 type rabbitmqExporterFactory struct {
 }
 
-// One mockConnection per exporter definition since the same definition may be used for different telemetry types, resulting in different factory instances
-// Channels need to be thread safe
-
 func NewFactory() exporter.Factory {
 	f := &rabbitmqExporterFactory{}
 	return exporter.NewFactory(

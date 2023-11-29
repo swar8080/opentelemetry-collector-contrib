@@ -11,7 +11,6 @@ type publishingData struct {
 }
 
 type LogsMarshaler interface {
-	// Marshal serializes logs into sarama's ProducerMessages
 	Marshal(logs plog.Logs) (*publishingData, error)
 }
 
@@ -20,6 +19,7 @@ type defaultLogsMarshaler struct {
 }
 
 func newLogMarshaler() LogsMarshaler {
+	// TODO revisit which encoding(s) to use
 	return &defaultLogsMarshaler{
 		impl: &plog.JSONMarshaler{},
 	}
