@@ -7,8 +7,9 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/rabbitmqexporter/internal"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
 	"time"
 )
@@ -20,44 +21,37 @@ type rabbitMqPublisher struct {
 	channelCacher *amqpChannelCacher
 }
 
+type rabbitMqTracesExporter struct {
+	publisher  *rabbitMqPublisher
+	marshaller TracesMarshaler
+}
+
+type rabbitMqMetricsExporter struct {
+	publisher  *rabbitMqPublisher
+	marshaller MetricsMarshaler
+}
+
 type rabbitMqLogsExporter struct {
 	publisher  *rabbitMqPublisher
 	marshaller LogsMarshaler
 }
 
-func newLogsExporter(conf config, set exporter.CreateSettings, amqpClient internal.AmqpClient) (*rabbitMqLogsExporter, error) {
-	publisher, err := newPublisher(conf, set, amqpClient, "otel-logs")
+func (e *rabbitMqTracesExporter) exportTraces(ctx context.Context, data ptrace.Traces) error {
+	publishingData, err := e.marshaller.Marshal(data)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return &rabbitMqLogsExporter{
-		publisher:  publisher,
-		marshaller: newLogMarshaler(),
-	}, nil
+	return e.publisher.publish(ctx, publishingData)
 }
 
-func newPublisher(conf config, set exporter.CreateSettings, client internal.AmqpClient, connectionName string) (*rabbitMqPublisher, error) {
-	connectionConfig := &connectionConfig{
-		logger:            set.Logger,
-		connectionUrl:     conf.connectionUrl,
-		connectionName:    connectionName,
-		channelPoolSize:   conf.channelPoolSize,
-		connectionTimeout: conf.connectionTimeout,
-		heartbeatInterval: conf.connectionHeartbeatInterval,
-		confirmationMode:  conf.confirmMode,
-	}
-	channelCacher, err := newAmqpChannelCacher(connectionConfig, client)
+func (e *rabbitMqMetricsExporter) exportMetrics(ctx context.Context, data pmetric.Metrics) error {
+	publishingData, err := e.marshaller.Marshal(data)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	publisher := rabbitMqPublisher{
-		set:           set.TelemetrySettings,
-		config:        conf,
-		channelCacher: channelCacher,
-	}
-	return &publisher, nil
+	return e.publisher.publish(ctx, publishingData)
 }
 
 func (e *rabbitMqLogsExporter) exportLogs(ctx context.Context, data plog.Logs) error {
@@ -78,12 +72,12 @@ func (p *rabbitMqPublisher) publish(ctx context.Context, data *publishingData) e
 		return err
 	}
 
-	err, healthyChannel := p.publishWithWrapper(ctx, data, channelWrapper)
+	err, healthyChannel := p.publishWithChannelManager(ctx, data, channelWrapper)
 	p.channelCacher.returnChannelToPool(channelWrapper, healthyChannel)
 	return err
 }
 
-func (p *rabbitMqPublisher) publishWithWrapper(ctx context.Context, data *publishingData, wrapper *amqpChannelManager) (err error, healthyChannel bool) {
+func (p *rabbitMqPublisher) publishWithChannelManager(ctx context.Context, data *publishingData, wrapper *amqpChannelManager) (err error, healthyChannel bool) {
 	deliveryMode := amqp.Transient
 	if p.config.durable {
 		deliveryMode = amqp.Persistent
