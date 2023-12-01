@@ -1,6 +1,7 @@
 package rabbitmqexporter
 
 import (
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/rabbitmqexporter/internal"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 	"sync"
@@ -18,8 +19,8 @@ import (
 type amqpChannelCacher struct {
 	logger             *zap.Logger
 	config             *connectionConfig
-	amqpClient         AmqpClient
-	connection         WrappedConnection
+	amqpClient         internal.AmqpClient
+	connection         internal.WrappedConnection
 	connLock           *sync.Mutex
 	channelManagerPool chan *amqpChannelManager
 	connectionErrors   chan *amqp.Error
@@ -37,13 +38,13 @@ type connectionConfig struct {
 
 type amqpChannelManager struct {
 	id         int
-	channel    WrappedChannel
+	channel    internal.WrappedChannel
 	wasHealthy bool
 	lock       *sync.Mutex
 	logger     *zap.Logger
 }
 
-func newAmqpChannelCacher(config *connectionConfig, amqpClient AmqpClient) (*amqpChannelCacher, error) {
+func newAmqpChannelCacher(config *connectionConfig, amqpClient internal.AmqpClient) (*amqpChannelCacher, error) {
 	acc := &amqpChannelCacher{
 		logger:             config.logger,
 		config:             config,
@@ -83,7 +84,7 @@ func (acc *amqpChannelCacher) connect() error {
 	}
 
 	// Proceed with re-connecting
-	var amqpConn WrappedConnection
+	var amqpConn internal.WrappedConnection
 	var err error
 
 	amqpConn, err = acc.amqpClient.DialConfig(acc.config.connectionUrl, amqp.Config{
@@ -170,7 +171,7 @@ func (acc *amqpChannelCacher) reconnectChannel(channel *amqpChannelManager) erro
 	return channel.tryReplacingChannel(acc.connection, acc.config.confirmationMode)
 }
 
-func (acw *amqpChannelManager) tryReplacingChannel(connection WrappedConnection, confirmAcks bool) error {
+func (acw *amqpChannelManager) tryReplacingChannel(connection internal.WrappedConnection, confirmAcks bool) error {
 	acw.lock.Lock()
 	defer acw.lock.Unlock()
 

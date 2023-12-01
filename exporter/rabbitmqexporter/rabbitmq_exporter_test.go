@@ -3,6 +3,7 @@ package rabbitmqexporter
 import (
 	"context"
 	"errors"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/rabbitmqexporter/internal"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/collector/exporter/exportertest"
@@ -15,18 +16,18 @@ import (
 	"time"
 )
 
-type dialFunc func() (WrappedConnection, error)
+type dialFunc func() (internal.WrappedConnection, error)
 type mockClient struct {
 	dialImpl dialFunc
 }
 
-type channelFunc func() (WrappedChannel, error)
+type channelFunc func() (internal.WrappedChannel, error)
 type mockConnection struct {
 	channelImpl channelFunc
 	isClosed    bool
 }
 
-type publishFunc func() (WrappedDeferredConfirmation, error)
+type publishFunc func() (internal.WrappedDeferredConfirmation, error)
 type mockChannel struct {
 	published   []amqp.Publishing
 	publishImpl publishFunc
@@ -40,7 +41,7 @@ type mockDeferredConfirmation struct {
 	acked       bool
 }
 
-func (c *mockClient) DialConfig(url string, config amqp.Config) (WrappedConnection, error) {
+func (c *mockClient) DialConfig(url string, config amqp.Config) (internal.WrappedConnection, error) {
 	return c.dialImpl()
 }
 
@@ -48,7 +49,7 @@ func (*mockClient) DefaultDial(connectionTimeout time.Duration) func(network, ad
 	return nil
 }
 
-func (c *mockConnection) Channel() (WrappedChannel, error) {
+func (c *mockConnection) Channel() (internal.WrappedChannel, error) {
 	return c.channelImpl()
 }
 
@@ -69,7 +70,7 @@ func (c *mockChannel) Confirm(noWait bool) error {
 	return nil
 }
 
-func (c *mockChannel) PublishWithDeferredConfirmWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) (WrappedDeferredConfirmation, error) {
+func (c *mockChannel) PublishWithDeferredConfirmWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) (internal.WrappedDeferredConfirmation, error) {
 	if c.published == nil {
 		c.published = make([]amqp.Publishing, 0)
 	}
@@ -125,7 +126,7 @@ func TestPublishLogsConcurrently(t *testing.T) {
 
 	channelIndex := atomic.Uint32{}
 	channels := []*mockChannel{channel, channel2}
-	connection.channelImpl = func() (WrappedChannel, error) {
+	connection.channelImpl = func() (internal.WrappedChannel, error) {
 		res := channels[channelIndex.Load()]
 		channelIndex.Add(1)
 		return res, nil
@@ -177,7 +178,7 @@ func TestPublishLogsWithError(t *testing.T) {
 	cfg := createDefaultConfig()
 	customConfig := *(cfg.(*config))
 
-	channel.publishImpl = func() (WrappedDeferredConfirmation, error) {
+	channel.publishImpl = func() (internal.WrappedDeferredConfirmation, error) {
 		return nil, errors.New("expected publish error")
 	}
 
@@ -191,13 +192,13 @@ func TestRecoveryFromBadConnectionAfterPublishError(t *testing.T) {
 	client, badConnection, badChannel, _ := buildMocks()
 	_, goodConnection, goodChannel, goodConfirm := buildMocks()
 
-	badChannel.publishImpl = func() (WrappedDeferredConfirmation, error) {
+	badChannel.publishImpl = func() (internal.WrappedDeferredConfirmation, error) {
 		badConnection.isClosed = true
 		return nil, errors.New("expected publish error")
 	}
 	connectionQueue := []*mockConnection{badConnection, goodConnection}
 	index := atomic.Uint32{}
-	client.dialImpl = func() (WrappedConnection, error) {
+	client.dialImpl = func() (internal.WrappedConnection, error) {
 		res := connectionQueue[index.Load()]
 		index.Add(1)
 		return res, nil
@@ -223,12 +224,12 @@ func TestRecoveryFromBadChannelAfterPublishError(t *testing.T) {
 	client, connection, badChannel, _ := buildMocks()
 	_, _, goodChannel, goodConfirm := buildMocks()
 
-	badChannel.publishImpl = func() (WrappedDeferredConfirmation, error) {
+	badChannel.publishImpl = func() (internal.WrappedDeferredConfirmation, error) {
 		return nil, errors.New("expected publish error")
 	}
 	channelQueue := []*mockChannel{badChannel, goodChannel}
 	index := atomic.Uint32{}
-	connection.channelImpl = func() (WrappedChannel, error) {
+	connection.channelImpl = func() (internal.WrappedChannel, error) {
 		res := channelQueue[index.Load()]
 		index.Add(1)
 		return res, nil
@@ -316,13 +317,13 @@ func buildMocks() (*mockClient, *mockConnection, *mockChannel, *mockDeferredConf
 		done:        make(chan struct{}),
 		acked:       false,
 	}
-	mockChannel := mockChannel{isClosed: false, publishImpl: func() (WrappedDeferredConfirmation, error) {
+	mockChannel := mockChannel{isClosed: false, publishImpl: func() (internal.WrappedDeferredConfirmation, error) {
 		return &confirmation, nil
 	}}
-	mockConnection := mockConnection{isClosed: false, channelImpl: func() (WrappedChannel, error) {
+	mockConnection := mockConnection{isClosed: false, channelImpl: func() (internal.WrappedChannel, error) {
 		return &mockChannel, nil
 	}}
-	mockClient := mockClient{dialImpl: func() (WrappedConnection, error) {
+	mockClient := mockClient{dialImpl: func() (internal.WrappedConnection, error) {
 		return &mockConnection, nil
 	}}
 

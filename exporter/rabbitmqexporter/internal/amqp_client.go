@@ -1,4 +1,4 @@
-package rabbitmqexporter
+package internal
 
 import (
 	"context"

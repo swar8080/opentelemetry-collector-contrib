@@ -4,6 +4,7 @@
 package rabbitmqexporter // import "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/rabbitmqexporter"
 import (
 	"context"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/rabbitmqexporter/internal"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/rabbitmqexporter/internal/metadata"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/exporter"
@@ -28,7 +29,7 @@ func (f *rabbitmqExporterFactory) createLogsExporter(
 	cfg component.Config,
 ) (exporter.Logs, error) {
 	customConfig := *(cfg.(*config))
-	exp, err := newLogsExporter(customConfig, set, newAmqpClient())
+	exp, err := newLogsExporter(customConfig, set, internal.newAmqpClient())
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/rabbitmqexporter/internal"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/exporter"
@@ -15,12 +16,12 @@ import (
 type rabbitMqLogsProducer struct {
 	set           component.TelemetrySettings
 	config        config
-	amqpClient    *AmqpClient
+	amqpClient    *internal.AmqpClient
 	channelCacher *amqpChannelCacher
 	marshaller    LogsMarshaler
 }
 
-func newLogsExporter(conf config, set exporter.CreateSettings, amqpClient AmqpClient) (*rabbitMqLogsProducer, error) {
+func newLogsExporter(conf config, set exporter.CreateSettings, amqpClient internal.AmqpClient) (*rabbitMqLogsProducer, error) {
 	amqpChannelCacher, err := newExporterChannelCacher(conf, set, "otel-logs", amqpClient)
 	if err != nil {
 		return nil, err
@@ -35,7 +36,7 @@ func newLogsExporter(conf config, set exporter.CreateSettings, amqpClient AmqpCl
 	return logsProducer, nil
 }
 
-func newExporterChannelCacher(conf config, set exporter.CreateSettings, connectionName string, client AmqpClient) (*amqpChannelCacher, error) {
+func newExporterChannelCacher(conf config, set exporter.CreateSettings, connectionName string, client internal.AmqpClient) (*amqpChannelCacher, error) {
 	connectionConfig := &connectionConfig{
 		logger:            set.Logger,
 		connectionUrl:     conf.connectionUrl,
