@@ -13,30 +13,31 @@ import (
 	"time"
 )
 
-type rabbitMqLogsProducer struct {
+type rabbitMqPublisher struct {
 	set           component.TelemetrySettings
 	config        config
 	amqpClient    *internal.AmqpClient
 	channelCacher *amqpChannelCacher
-	marshaller    LogsMarshaler
 }
 
-func newLogsExporter(conf config, set exporter.CreateSettings, amqpClient internal.AmqpClient) (*rabbitMqLogsProducer, error) {
-	amqpChannelCacher, err := newExporterChannelCacher(conf, set, "otel-logs", amqpClient)
+type rabbitMqLogsExporter struct {
+	publisher  *rabbitMqPublisher
+	marshaller LogsMarshaler
+}
+
+func newLogsExporter(conf config, set exporter.CreateSettings, amqpClient internal.AmqpClient) (*rabbitMqLogsExporter, error) {
+	publisher, err := newPublisher(conf, set, amqpClient, "otel-logs")
 	if err != nil {
 		return nil, err
 	}
 
-	logsProducer := &rabbitMqLogsProducer{
-		set:           set.TelemetrySettings,
-		config:        conf,
-		channelCacher: amqpChannelCacher,
-		marshaller:    newLogMarshaler(),
-	}
-	return logsProducer, nil
+	return &rabbitMqLogsExporter{
+		publisher:  publisher,
+		marshaller: newLogMarshaler(),
+	}, nil
 }
 
-func newExporterChannelCacher(conf config, set exporter.CreateSettings, connectionName string, client internal.AmqpClient) (*amqpChannelCacher, error) {
+func newPublisher(conf config, set exporter.CreateSettings, client internal.AmqpClient, connectionName string) (*rabbitMqPublisher, error) {
 	connectionConfig := &connectionConfig{
 		logger:            set.Logger,
 		connectionUrl:     conf.connectionUrl,
@@ -46,42 +47,55 @@ func newExporterChannelCacher(conf config, set exporter.CreateSettings, connecti
 		heartbeatInterval: conf.connectionHeartbeatInterval,
 		confirmationMode:  conf.confirmMode,
 	}
-	return newAmqpChannelCacher(connectionConfig, client)
+	channelCacher, err := newAmqpChannelCacher(connectionConfig, client)
+	if err != nil {
+		return nil, err
+	}
+
+	publisher := rabbitMqPublisher{
+		set:           set.TelemetrySettings,
+		config:        conf,
+		channelCacher: channelCacher,
+	}
+	return &publisher, nil
+}
+
+func (e *rabbitMqLogsExporter) exportLogs(ctx context.Context, data plog.Logs) error {
+	publishingData, err := e.marshaller.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	return e.publisher.publish(ctx, publishingData)
 }
 
 // TODO implement and add code re-use for other types of telemetry
-func (e *rabbitMqLogsProducer) logsDataPusher(ctx context.Context, data plog.Logs) error {
-	e.channelCacher.restoreConnectionIfUnhealthy()
-	channelWrapper, err := e.channelCacher.requestHealthyChannelFromPool()
+func (p *rabbitMqPublisher) publish(ctx context.Context, data *publishingData) error {
+	p.channelCacher.restoreConnectionIfUnhealthy()
+	channelWrapper, err := p.channelCacher.requestHealthyChannelFromPool()
 
 	if err != nil {
 		return err
 	}
 
-	err, healthyChannel := e.pushData(ctx, data, channelWrapper)
-	e.channelCacher.returnChannelToPool(channelWrapper, healthyChannel)
+	err, healthyChannel := p.publishWithWrapper(ctx, data, channelWrapper)
+	p.channelCacher.returnChannelToPool(channelWrapper, healthyChannel)
 	return err
 }
 
-func (e *rabbitMqLogsProducer) pushData(ctx context.Context, data plog.Logs, wrapper *amqpChannelManager) (err error, healthyChannel bool) {
-	publishingData, err := e.marshaller.Marshal(data)
-
-	if err != nil {
-		return err, true
-	}
-
+func (p *rabbitMqPublisher) publishWithWrapper(ctx context.Context, data *publishingData, wrapper *amqpChannelManager) (err error, healthyChannel bool) {
 	deliveryMode := amqp.Transient
-	if e.config.durable {
+	if p.config.durable {
 		deliveryMode = amqp.Persistent
 	}
 
 	// TODO handle case where message doesn't get routed to any queues and is returned (when configured with mandatory = true)
-	confirmation, err := wrapper.channel.PublishWithDeferredConfirmWithContext(ctx, "amq.direct", e.config.routingKey, false, false, amqp.Publishing{
+	confirmation, err := wrapper.channel.PublishWithDeferredConfirmWithContext(ctx, "amq.direct", p.config.routingKey, false, false, amqp.Publishing{
 		Headers:         amqp.Table{},
-		ContentType:     publishingData.ContentType,
-		ContentEncoding: publishingData.ContentEncoding,
+		ContentType:     data.ContentType,
+		ContentEncoding: data.ContentEncoding,
 		DeliveryMode:    deliveryMode,
-		Body:            publishingData.Body,
+		Body:            data.Body,
 	})
 
 	if err != nil {
@@ -91,20 +105,20 @@ func (e *rabbitMqLogsProducer) pushData(ctx context.Context, data plog.Logs, wra
 	select {
 	case <-confirmation.Done():
 		if confirmation.Acked() {
-			e.set.Logger.Debug("Received ack", zap.Int("channelId", wrapper.id), zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
+			p.set.Logger.Debug("Received ack", zap.Int("channelId", wrapper.id), zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
 			return nil, true
 		}
-		e.set.Logger.Warn("Received nack from rabbitmq publishing confirmation", zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
+		p.set.Logger.Warn("Received nack from rabbitmq publishing confirmation", zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
 		err := errors.New("received nack from rabbitmq publishing confirmation")
 		return err, true
 
-	case <-time.After(e.config.publishConfirmationTimeout):
-		e.set.Logger.Warn("Timeout waiting for publish confirmation", zap.Duration("timeout", e.config.publishConfirmationTimeout), zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
-		err := fmt.Errorf("timeout waiting for publish confirmation after %s", e.config.publishConfirmationTimeout)
+	case <-time.After(p.config.publishConfirmationTimeout):
+		p.set.Logger.Warn("Timeout waiting for publish confirmation", zap.Duration("timeout", p.config.publishConfirmationTimeout), zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
+		err := fmt.Errorf("timeout waiting for publish confirmation after %s", p.config.publishConfirmationTimeout)
 		return err, false
 	}
 }
 
-func (e *rabbitMqLogsProducer) Close(context.Context) error {
-	return e.channelCacher.close()
+func (e *rabbitMqLogsExporter) Close(context.Context) error {
+	return e.publisher.channelCacher.close()
 }

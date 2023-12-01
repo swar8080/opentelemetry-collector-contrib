@@ -109,7 +109,7 @@ func TestPublishLogsHappyPath(t *testing.T) {
 	rabbitMqExporter, _ := newLogsExporter(customConfig, exportertest.NewNopCreateSettings(), client)
 
 	confirmAsynchronously(confirmation, true, time.Millisecond*50)
-	err := rabbitMqExporter.logsDataPusher(context.Background(), plog.NewLogs())
+	err := rabbitMqExporter.exportLogs(context.Background(), plog.NewLogs())
 
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(channel.published))
@@ -144,7 +144,7 @@ func TestPublishLogsConcurrently(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func(ii int) {
 			confirmAsynchronously(confirmations[ii], true, time.Millisecond*100)
-			err := rabbitMqExporter.logsDataPusher(context.Background(), plog.NewLogs())
+			err := rabbitMqExporter.exportLogs(context.Background(), plog.NewLogs())
 			assert.NoError(t, err)
 			wg.Done()
 		}(i)
@@ -167,7 +167,7 @@ func TestPublishLogsWithTimeout(t *testing.T) {
 	customConfig.publishConfirmationTimeout = time.Millisecond * 100
 
 	rabbitMqExporter, _ := newLogsExporter(customConfig, exportertest.NewNopCreateSettings(), client)
-	err := rabbitMqExporter.logsDataPusher(context.Background(), plog.NewLogs())
+	err := rabbitMqExporter.exportLogs(context.Background(), plog.NewLogs())
 
 	assert.ErrorContains(t, err, "timeout waiting for publish confirmation after 100ms")
 	assert.Equal(t, 1, len(channel.published))
@@ -183,7 +183,7 @@ func TestPublishLogsWithError(t *testing.T) {
 	}
 
 	rabbitMqExporter, _ := newLogsExporter(customConfig, exportertest.NewNopCreateSettings(), client)
-	err := rabbitMqExporter.logsDataPusher(context.Background(), plog.NewLogs())
+	err := rabbitMqExporter.exportLogs(context.Background(), plog.NewLogs())
 
 	assert.ErrorContains(t, err, "expected publish error")
 }
@@ -210,12 +210,12 @@ func TestRecoveryFromBadConnectionAfterPublishError(t *testing.T) {
 
 	rabbitMqExporter, _ := newLogsExporter(customConfig, exportertest.NewNopCreateSettings(), client)
 
-	err := rabbitMqExporter.logsDataPusher(context.Background(), plog.NewLogs())
+	err := rabbitMqExporter.exportLogs(context.Background(), plog.NewLogs())
 	assert.ErrorContains(t, err, "expected publish error")
 	assert.Equal(t, 1, len(badChannel.published))
 
 	confirmAsynchronously(goodConfirm, true, time.Millisecond*50)
-	err = rabbitMqExporter.logsDataPusher(context.Background(), plog.NewLogs())
+	err = rabbitMqExporter.exportLogs(context.Background(), plog.NewLogs())
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(goodChannel.published))
 }
@@ -241,11 +241,11 @@ func TestRecoveryFromBadChannelAfterPublishError(t *testing.T) {
 
 	rabbitMqExporter, _ := newLogsExporter(customConfig, exportertest.NewNopCreateSettings(), client)
 
-	err := rabbitMqExporter.logsDataPusher(context.Background(), plog.NewLogs())
+	err := rabbitMqExporter.exportLogs(context.Background(), plog.NewLogs())
 	assert.ErrorContains(t, err, "expected publish error")
 
 	confirmAsynchronously(goodConfirm, true, time.Millisecond*50)
-	err = rabbitMqExporter.logsDataPusher(context.Background(), plog.NewLogs())
+	err = rabbitMqExporter.exportLogs(context.Background(), plog.NewLogs())
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(goodChannel.published))
 }
@@ -258,7 +258,7 @@ func TestPublishLogsWithNack(t *testing.T) {
 
 	confirmAsynchronously(confirmation, false, time.Millisecond*50)
 	rabbitMqExporter, _ := newLogsExporter(customConfig, exportertest.NewNopCreateSettings(), client)
-	err := rabbitMqExporter.logsDataPusher(context.Background(), plog.NewLogs())
+	err := rabbitMqExporter.exportLogs(context.Background(), plog.NewLogs())
 
 	assert.ErrorContains(t, err, "received nack from rabbitmq publishing confirmation")
 	assert.Equal(t, 1, len(channel.published))
@@ -303,7 +303,7 @@ func TestPublishDurableFlag(t *testing.T) {
 
 		exporter, _ := newLogsExporter(customConfig, exportertest.NewNopCreateSettings(), client)
 		confirmAsynchronously(confirmation, true, time.Millisecond*50)
-		err := exporter.logsDataPusher(context.Background(), plog.NewLogs())
+		err := exporter.exportLogs(context.Background(), plog.NewLogs())
 
 		assert.NoError(t, err)
 		assert.Equal(t, 1, len(channel.published))

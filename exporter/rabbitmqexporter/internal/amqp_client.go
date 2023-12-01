@@ -35,7 +35,7 @@ type WrappedDeferredConfirmation interface {
 
 type amqpClient struct{}
 
-func newAmqpClient() AmqpClient {
+func NewAmqpClient() AmqpClient {
 	return &amqpClient{}
 }
 
