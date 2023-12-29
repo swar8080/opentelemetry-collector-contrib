@@ -5,6 +5,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +25,7 @@ type amqpChannelCacher struct {
 	connLock           *sync.Mutex
 	channelManagerPool chan *amqpChannelManager
 	connectionErrors   chan *amqp.Error
+	channelIdCounter   *atomic.Uint64
 }
 
 type connectionConfig struct {
@@ -37,7 +39,7 @@ type connectionConfig struct {
 }
 
 type amqpChannelManager struct {
-	id         int
+	id         uint64
 	channel    internal.WrappedChannel
 	wasHealthy bool
 	lock       *sync.Mutex
@@ -51,6 +53,7 @@ func newAmqpChannelCacher(config *connectionConfig, amqpClient internal.AmqpClie
 		amqpClient:         amqpClient,
 		connLock:           &sync.Mutex{},
 		channelManagerPool: make(chan *amqpChannelManager, config.channelPoolSize),
+		channelIdCounter:   &atomic.Uint64{},
 	}
 
 	err := acc.connect()
@@ -60,7 +63,7 @@ func newAmqpChannelCacher(config *connectionConfig, amqpClient internal.AmqpClie
 
 	// Synchronously try creating and connecting to channels
 	for i := 0; i < acc.config.channelPoolSize; i++ {
-		acc.channelManagerPool <- acc.createChannelManager(i)
+		acc.channelManagerPool <- acc.createChannelManager()
 	}
 
 	return acc, nil
@@ -139,9 +142,11 @@ func (acc *amqpChannelCacher) restoreConnectionIfUnhealthy() {
 	}
 }
 
-func (acc *amqpChannelCacher) createChannelManager(id int) *amqpChannelManager {
-	channelWrapper := &amqpChannelManager{id: id, logger: acc.logger, lock: &sync.Mutex{}}
-	err := channelWrapper.tryReplacingChannel(acc.connection, acc.config.confirmationMode)
+func (acc *amqpChannelCacher) createChannelManager() *amqpChannelManager {
+	channelId := acc.channelIdCounter.Add(1)
+	channelWrapper := &amqpChannelManager{id: channelId, logger: acc.logger, lock: &sync.Mutex{}}
+
+	err := channelWrapper.tryReplacingChannel(acc.connection, channelId, acc.config.confirmationMode)
 	if err != nil {
 		acc.logger.Warn("Error creating channel manager's channel", zap.Error(err))
 	}
@@ -150,7 +155,8 @@ func (acc *amqpChannelCacher) createChannelManager(id int) *amqpChannelManager {
 
 func (acc *amqpChannelCacher) requestHealthyChannelFromPool() (*amqpChannelManager, error) {
 	channelWrapper := <-acc.channelManagerPool
-	if !channelWrapper.wasHealthy {
+	if !channelWrapper.wasHealthy || channelWrapper.channel.IsClosed() {
+		acc.logger.Warn("Attempting to replace closed or unhealthy AMQP channel", zap.Uint64("channelId", channelWrapper.id))
 		err := acc.reconnectChannel(channelWrapper)
 		if err != nil {
 			acc.returnChannelToPool(channelWrapper, false)
@@ -168,10 +174,10 @@ func (acc *amqpChannelCacher) returnChannelToPool(channelWrapper *amqpChannelMan
 
 func (acc *amqpChannelCacher) reconnectChannel(channel *amqpChannelManager) error {
 	acc.restoreConnectionIfUnhealthy()
-	return channel.tryReplacingChannel(acc.connection, acc.config.confirmationMode)
+	return channel.tryReplacingChannel(acc.connection, acc.channelIdCounter.Add(1), acc.config.confirmationMode)
 }
 
-func (acw *amqpChannelManager) tryReplacingChannel(connection internal.WrappedConnection, confirmAcks bool) error {
+func (acw *amqpChannelManager) tryReplacingChannel(connection internal.WrappedConnection, channelId uint64, confirmAcks bool) error {
 	acw.lock.Lock()
 	defer acw.lock.Unlock()
 
@@ -185,12 +191,15 @@ func (acw *amqpChannelManager) tryReplacingChannel(connection internal.WrappedCo
 	}
 
 	var err error
-	acw.channel, err = connection.Channel()
+	channel, err := connection.Channel()
 	if err != nil {
 		acw.logger.Warn("Channel creation error", zap.Error(err))
 		acw.wasHealthy = false
 		return err
 	}
+	acw.channel = channel
+	acw.id = channelId
+	acw.logger.Debug("Created new channel", zap.Uint64("channelId", channelId))
 
 	if confirmAcks {
 		err := acw.channel.Confirm(false)

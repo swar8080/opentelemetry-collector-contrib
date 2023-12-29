@@ -99,15 +99,15 @@ func (p *rabbitMqPublisher) publishWithChannelManager(ctx context.Context, data 
 	select {
 	case <-confirmation.Done():
 		if confirmation.Acked() {
-			p.set.Logger.Debug("Received ack", zap.Int("channelId", wrapper.id), zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
+			p.set.Logger.Debug("Received ack", zap.Uint64("channelId", wrapper.id), zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
 			return nil, true
 		}
-		p.set.Logger.Warn("Received nack from rabbitmq publishing confirmation", zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
+		p.set.Logger.Warn("Received nack from rabbitmq publishing confirmation", zap.Uint64("channelId", wrapper.id), zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
 		err := errors.New("received nack from rabbitmq publishing confirmation")
 		return err, true
 
 	case <-time.After(p.config.publishConfirmationTimeout):
-		p.set.Logger.Warn("Timeout waiting for publish confirmation", zap.Duration("timeout", p.config.publishConfirmationTimeout), zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
+		p.set.Logger.Warn("Timeout waiting for publish confirmation", zap.Duration("timeout", p.config.publishConfirmationTimeout), zap.Uint64("channelId", wrapper.id), zap.Uint64("deliveryTag", confirmation.DeliveryTag()))
 		err := fmt.Errorf("timeout waiting for publish confirmation after %s", p.config.publishConfirmationTimeout)
 		return err, false
 	}
