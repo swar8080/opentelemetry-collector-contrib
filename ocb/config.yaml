@@ -1,0 +1,46 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+      grpc:
+
+processors:
+  batch:
+    send_batch_size: 1
+    timeout: 0s
+
+exporters:
+  debug:
+    verbosity: detailed
+    sampling_initial: 1
+    sampling_thereafter: 1
+  rabbitmq/abc:
+
+extensions:
+  health_check:
+
+service:
+  pipelines:
+#    logs:
+#      receivers:
+#      - otlp
+#      processors:
+#      - batch
+#      exporters:
+#      - debug
+#      - rabbitmq/abc
+    traces:
+      receivers:
+        - otlp
+      processors:
+        - batch
+      exporters:
+        - debug
+#        - rabbitmq/abc
+  telemetry:
+    logs:
+      level: "debug"
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+  extensions: [health_check]
